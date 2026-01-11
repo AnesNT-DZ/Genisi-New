@@ -5,63 +5,67 @@ import logging
 import random
 import urllib.parse
 
-# إعداد السجلات لمراقبة الأخطاء
+# إعداد السجلات
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
 
-# --- إعدادات Genisi ---
-API_KEY = "sk_JHTVJDFsV7uiHdMVFqNKwzY8DZkhw0Oz"  # مفتاحك الخاص
-TEXT_MODEL = "gemini-large"             # النموذج النصي والترجمة
-IMAGE_MODEL = "nanobanana-pro"    # نموذج الصور القوي
+# --- الإعدادات بناءً على التوثيق ---
+API_KEY = "sk_JHTVJDFsV7uiHdMVFqNKwzY8DZkhw0Oz"
 BASE_URL = "https://gen.pollinations.ai"
 
-# الكلمات المفتاحية التي تدل على طلب صورة
-IMAGE_KEYWORDS = ["ارسم", "صورة", "تخيل", "رسمة", "ولد", "draw", "image", "generate", "paint"]
+# --- النماذج المذكورة في التوثيق ---
+MODEL_CHAT_FAST = "openai"          # النموذج السريع (General)
+MODEL_CHAT_CODE = "qwen-coder"      # النموذج المخصص للبرمجة
+MODEL_IMAGE = "nanobanana-pro"      # نموذج الصور القوي
 
-def get_headers():
+def get_auth_headers():
     return {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {API_KEY}"
     }
 
-def translate_to_english(text):
-    """
-    وظيفة لترجمة النص العربي إلى إنجليزي لضمان دقة الصورة
-    نستخدم نفس نموذج gemini للقيام بهذه المهمة
-    """
+def detect_intent_and_model(text, has_file):
+    """تحديد النية واختيار النموذج المناسب"""
+    text_lower = text.lower()
+    
+    # كلمات تدل على الصور
+    image_keywords = ["ارسم", "صورة", "تخيل", "draw", "generate image", "paint"]
+    if any(k in text_lower for k in image_keywords):
+        return "IMAGE", None
+
+    # كلمات تدل على البرمجة أو وجود ملف
+    code_keywords = ["code", "python", "java", "script", "error", "debug", "function", "api", "كود", "برمجة", "خطأ"]
+    if has_file or any(k in text_lower for k in code_keywords):
+        return "TEXT", MODEL_CHAT_CODE
+    
+    # الافتراضي: دردشة سريعة
+    return "TEXT", MODEL_CHAT_FAST
+
+def translate_prompt(text):
+    """ترجمة وصف الصورة للإنجليزية لضمان الدقة"""
     try:
+        # نستخدم endpoint الشات للترجمة
         payload = {
-            "model": TEXT_MODEL,
+            "model": MODEL_CHAT_FAST,
             "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a translator. Translate the following Arabic image description into a detailed English prompt for an AI image generator. Output ONLY the English translation, nothing else."
-                },
-                {
-                    "role": "user",
-                    "content": text
-                }
-            ],
-            "temperature": 0.3
+                {"role": "system", "content": "Translate the following to English for an image prompt. Output ONLY the translation."},
+                {"role": "user", "content": text}
+            ]
         }
-        
         response = requests.post(
             f"{BASE_URL}/v1/chat/completions", 
-            json=payload, 
-            headers=get_headers(),
-            timeout=20
+            headers=get_auth_headers(), 
+            json=payload,
+            timeout=10
         )
-        
         if response.status_code == 200:
-            data = response.json()
-            return data['choices'][0]['message']['content']
-        return text # في حال الفشل نعود للنص الأصلي
+            return response.json()['choices'][0]['message']['content']
     except Exception as e:
-        logger.error(f"Translation Error: {e}")
-        return text
+        logger.error(f"Translation failed: {e}")
+    return text
 
 @app.route('/')
 def home():
@@ -72,73 +76,95 @@ def chat():
     try:
         data = request.json
         user_input = data.get('message', '')
+        file_content = data.get('file_content', '')
+        file_name = data.get('file_name', '')
+
+        if not user_input and not file_content:
+            return jsonify({"reply": "Empty request"}), 400
+
+        # دمج الملف مع الرسالة
+        full_context = user_input
+        if file_content:
+            full_context += f"\n\n--- Attached File: {file_name} ---\n{file_content}\n--- End File ---"
+
+        # تحديد النية
+        intent, selected_model = detect_intent_and_model(user_input, bool(file_content))
         
-        if not user_input:
-            return jsonify({"reply": "الرجاء كتابة رسالة."}), 400
-
-        logger.info(f"User Input: {user_input}")
-
-        # --- المنطق 1: هل يريد المستخدم صورة؟ ---
-        # نفحص هل تحتوي الرسالة على كلمات رسم
-        is_image_request = any(keyword in user_input.lower() for keyword in IMAGE_KEYWORDS)
-
-        if is_image_request:
-            # 1. ترجمة الطلب للإنجليزية للحصول على أفضل نتيجة
-            english_prompt = translate_to_english(user_input)
-            logger.info(f"Translated Prompt: {english_prompt}")
+        # ---------------------------------------------
+        # 1. معالجة الصور (Image Generation)
+        # ---------------------------------------------
+        if intent == "IMAGE":
+            # ترجمة الوصف
+            english_prompt = translate_prompt(user_input)
+            encoded_prompt = urllib.parse.quote(english_prompt)
+            seed = random.randint(0, 9999999)
             
-            # 2. تجهيز رابط الصورة (تشفير النص ليكون صالحاً في الرابط)
-            safe_prompt = urllib.parse.quote(english_prompt)
-            seed = random.randint(0, 1000000) # رقم عشوائي لتغيير النتيجة كل مرة
-            
-            # رابط الصورة المباشر
-            image_url = f"{BASE_URL}/image/{safe_prompt}?model={IMAGE_MODEL}&width=1024&height=1024&seed={seed}&nologo=true"
-            
-            # إرجاع الصورة بتنسيق HTML ليفهمها المتصفح
-            reply_html = (
-                f"🎨 <b>جاري رسم خيالك:</b> {user_input}<br>"
-                f"<img src='{image_url}' alt='Genisi Image' style='width: 100%; border-radius: 15px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);'>"
+            # بناء الرابط حسب التوثيق: GET /image/{prompt}
+            # الحل الجذري للـ 401: تمرير key في الرابط
+            image_url = (
+                f"{BASE_URL}/image/{encoded_prompt}"
+                f"?model={MODEL_IMAGE}"
+                f"&width=1024&height=1024"
+                f"&seed={seed}"
+                f"&nologo=true"
+                f"&key={API_KEY}"  # <--- هذا هو الإصلاح حسب التوثيق
             )
-            return jsonify({"reply": reply_html})
+            
+            html_response = (
+                f"🎨 <b>Genisi Art:</b> {user_input}<br>"
+                f"<small style='color:#888'>Translated: {english_prompt}</small><br>"
+                f"<img src='{image_url}' alt='Generating...' style='width:100%; border-radius:10px; margin-top:10px; box-shadow:0 5px 15px rgba(0,0,0,0.3);'>"
+            )
+            return jsonify({"reply": html_response})
 
-        # --- المنطق 2: محادثة نصية عادية (Gemini) ---
+        # ---------------------------------------------
+        # 2. معالجة النصوص والبرمجة (Text/Code Generation)
+        # ---------------------------------------------
         else:
+            system_msg = "You are Genisi."
+            if selected_model == MODEL_CHAT_CODE:
+                system_msg = "You are an expert Coding Assistant (Genisi Coder). Analyze the code, fix errors, and explain clearly."
+            else:
+                system_msg = "You are Genisi, a fast and helpful assistant."
+
+            # الهيكلة حسب التوثيق POST /v1/chat/completions
             payload = {
-                "model": TEXT_MODEL,
+                "model": selected_model,
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": "أنت Genisi، مساعد ذكي ومبدع. تتحدث العربية بطلاقة. ردودك مفيدة ومختصرة."
-                    },
-                    {
-                        "role": "user",
-                        "content": user_input
-                    }
-                ]
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": full_context}
+                ],
+                "temperature": 0.7,
+                "stream": False
             }
 
             response = requests.post(
                 f"{BASE_URL}/v1/chat/completions",
+                headers=get_auth_headers(),
                 json=payload,
-                headers=get_headers(),
-                timeout=40
+                timeout=60
             )
 
             if response.status_code == 200:
-                try:
-                    api_data = response.json()
-                    bot_reply = api_data['choices'][0]['message']['content']
-                    return jsonify({"reply": bot_reply})
-                except Exception:
-                    # في حال لم يكن الرد JSON (احتياط)
-                    return jsonify({"reply": response.text})
+                data = response.json()
+                # استخراج الرد حسب بنية OpenAI
+                bot_reply = data['choices'][0]['message']['content']
+                
+                # إضافة توقيع النموذج المستخدم للمطور
+                model_badge = "⚡ Fast" if selected_model == MODEL_CHAT_FAST else "👨‍💻 Coder"
+                bot_reply = f"`[{model_badge}]`\n\n{bot_reply}"
+                
+                return jsonify({"reply": bot_reply})
+            
+            elif response.status_code == 401:
+                return jsonify({"reply": "خطأ 401: مفتاح API غير صالح أو انتهت صلاحيته."}), 401
             else:
                 logger.error(f"API Error: {response.text}")
-                return jsonify({"reply": "عذراً، واجهت مشكلة في الاتصال بنموذج Gemini."}), 500
+                return jsonify({"reply": f"Error from Pollinations: {response.status_code}"}), 500
 
     except Exception as e:
-        logger.error(f"Fatal Error: {e}")
-        return jsonify({"reply": "حدث خطأ غير متوقع في الخادم."}), 500
+        logger.error(f"Server Error: {e}")
+        return jsonify({"reply": "Internal Server Error"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
