@@ -15,9 +15,12 @@ CORS(app)
 API_KEY = "sk_JHTVJDFsV7uiHdMVFqNKwzY8DZkhw0Oz"
 BASE_URL = "https://gen.pollinations.ai"
 
-MODEL_CHAT_FAST = "openai"
-MODEL_CHAT_CODE = "qwen-coder"
-MODEL_IMAGE = "nanobanana-pro"
+MODEL_CHAT_FAST = "gemini-fast"
+MODEL_CHAT_CODE = "gemini-large"
+
+# التعديل هنا: غيرنا "nanobanana-pro" إلى "flux"
+# flux هو النموذج المجاني القوي الذي لا يسبب خطأ 403
+MODEL_IMAGE = "flux" 
 
 def get_auth_headers():
     return {
@@ -28,24 +31,22 @@ def get_auth_headers():
 def resolve_model(text, has_file, user_mode):
     """
     تحديد النموذج بناءً على طلب المستخدم + المحتوى
-    user_mode: 'auto', 'openai', 'qwen-coder'
+    user_mode: 'auto', 'gemini', 'gemini-large'
     """
     text_lower = text.lower()
     
     # 1. أولوية قصوى: هل المستخدم يطلب صورة؟
-    # (حتى لو اختار المستخدم نموذج برمجة، إذا قال "ارسم" يجب أن نرسم)
     image_keywords = ["ارسم", "صورة", "تخيل", "draw", "generate image", "paint"]
     if any(k in text_lower for k in image_keywords):
         return "IMAGE", None
 
-    # 2. إذا حدد المستخدم نموذجاً معيناً يدوياً، نستخدمه
-    if user_mode == "openai":
+    # 2. إذا حدد المستخدم نموذجاً معيناً يدوياً
+    if user_mode == "gemini":
         return "TEXT", MODEL_CHAT_FAST
-    elif user_mode == "qwen-coder":
+    elif user_mode == "gemini-large":
         return "TEXT", MODEL_CHAT_CODE
     
     # 3. الوضع التلقائي (Auto Mode)
-    # إذا كان هناك ملف أو كلمات برمجية -> Qwen، غير ذلك -> OpenAI
     code_keywords = ["code", "python", "java", "script", "error", "debug", "function", "api", "كود", "برمجة", "خطأ"]
     if has_file or any(k in text_lower for k in code_keywords):
         return "TEXT", MODEL_CHAT_CODE
@@ -84,7 +85,7 @@ def chat():
         user_input = data.get('message', '')
         file_content = data.get('file_content', '')
         file_name = data.get('file_name', '')
-        user_mode = data.get('model_mode', 'auto') # استقبال اختيار المستخدم
+        user_mode = data.get('model_mode', 'auto') 
 
         if not user_input and not file_content:
             return jsonify({"reply": "Empty request"}), 400
@@ -107,7 +108,7 @@ def chat():
                 f"?model={MODEL_IMAGE}&width=1024&height=1024&seed={seed}&nologo=true&key={API_KEY}"
             )
             html_response = (
-                f"🎨 <b>Genisi Art:</b> {user_input}<br>"
+                f"🎨 <b>Genisi Art (Flux):</b> {user_input}<br>"
                 f"<small style='color:#888'>{english_prompt}</small><br>"
                 f"<img src='{image_url}' alt='Genisi Image' style='width:100%; border-radius:10px; margin-top:10px;'>"
             )
@@ -117,9 +118,9 @@ def chat():
         else:
             system_msg = "You are Genisi."
             if selected_model == MODEL_CHAT_CODE:
-                system_msg = "You are Genisi Coder (Qwen). Expert developer. Analyze code deeply."
+                system_msg = "You are Genisi Coder . Expert developer. Analyze code deeply."
             else:
-                system_msg = "You are Genisi (OpenAI). Fast and helpful assistant."
+                system_msg = "You are Genisi . Fast and helpful assistant."
 
             payload = {
                 "model": selected_model,
@@ -139,7 +140,6 @@ def chat():
 
             if response.status_code == 200:
                 bot_reply = response.json()['choices'][0]['message']['content']
-                # إضافة علامة توضح النموذج المستخدم
                 badge = "⚡ GPT-4o" if selected_model == MODEL_CHAT_FAST else "💻 Qwen-Coder"
                 bot_reply = f"`[{badge}]`\n\n{bot_reply}"
                 return jsonify({"reply": bot_reply})
