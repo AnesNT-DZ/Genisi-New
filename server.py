@@ -14,7 +14,7 @@ CORS(app)
 
 # --- إعدادات Genisi ---
 API_KEY = "sk_JHTVJDFsV7uiHdMVFqNKwzY8DZkhw0Oz"  # مفتاحك الخاص
-TEXT_MODEL = "gemini"             # النموذج النصي والترجمة
+TEXT_MODEL = "gemini-large"             # النموذج النصي والترجمة
 IMAGE_MODEL = "nanobanana-pro"    # نموذج الصور القوي
 BASE_URL = "https://gen.pollinations.ai"
 
