@@ -4,8 +4,10 @@ import requests
 import logging
 import random
 import urllib.parse
+import traceback
 
-logging.basicConfig(level=logging.INFO)
+# إعداد السجلات لرؤية الأخطاء في Render Logs
+logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -19,7 +21,7 @@ BASE_URL = "https://gen.pollinations.ai"
 MODEL_CHAT_FAST = "openai"
 MODEL_CHAT_CODE = "qwen-coder"
 MODEL_IMAGE = "nanobanana-pro"
-MODEL_VIDEO = "veo"  # نموذج الفيديو الجديد
+MODEL_VIDEO = "veo"
 
 def get_auth_headers():
     return {
@@ -28,57 +30,52 @@ def get_auth_headers():
     }
 
 def resolve_model(text, has_file, user_mode):
-    """تحديد النية بناءً على اختيار المستخدم ومحتوى الرسالة"""
-    text_lower = text.lower()
-    
-    # 1. الاختيار اليدوي الصريح من القائمة
-    if user_mode == "veo":
-        return "VIDEO", MODEL_VIDEO
-    if user_mode == "openai":
+    """تحديد النية واختيار النموذج"""
+    try:
+        text_lower = text.lower()
+        
+        # 1. الاختيار اليدوي
+        if user_mode == "veo": return "VIDEO", MODEL_VIDEO
+        if user_mode == "openai": return "TEXT", MODEL_CHAT_FAST
+        if user_mode == "qwen-coder": return "TEXT", MODEL_CHAT_CODE
+        
+        # 2. الوضع التلقائي
+        video_keywords = ["video", "movie", "clip", "فيديو", "مقطع", "فيلم"]
+        if any(k in text_lower for k in video_keywords): return "VIDEO", MODEL_VIDEO
+
+        image_keywords = ["ارسم", "صورة", "تخيل", "draw", "generate image", "paint"]
+        if any(k in text_lower for k in image_keywords): return "IMAGE", MODEL_IMAGE
+
+        code_keywords = ["code", "python", "java", "html", "error", "debug", "api", "كود", "برمجة"]
+        if has_file or any(k in text_lower for k in code_keywords): return "TEXT", MODEL_CHAT_CODE
+        
         return "TEXT", MODEL_CHAT_FAST
-    if user_mode == "qwen-coder":
-        return "TEXT", MODEL_CHAT_CODE
-    
-    # 2. الوضع التلقائي (Auto)
-    
-    # هل يطلب فيديو؟
-    video_keywords = ["video", "movie", "clip", "فيديو", "مقطع", "فيلم", "تحريك"]
-    if any(k in text_lower for k in video_keywords):
-        return "VIDEO", MODEL_VIDEO
-
-    # هل يطلب صورة؟
-    image_keywords = ["ارسم", "صورة", "تخيل", "draw", "generate image", "paint"]
-    if any(k in text_lower for k in image_keywords):
-        return "IMAGE", MODEL_IMAGE
-
-    # هل يطلب كود أو يوجد ملف؟
-    code_keywords = ["code", "python", "java", "html", "error", "debug", "api", "كود", "برمجة"]
-    if has_file or any(k in text_lower for k in code_keywords):
-        return "TEXT", MODEL_CHAT_CODE
-    
-    # الافتراضي
-    return "TEXT", MODEL_CHAT_FAST
+    except Exception as e:
+        print(f"Error in resolve_model: {e}")
+        return "TEXT", MODEL_CHAT_FAST
 
 def translate_prompt(text):
-    """ترجمة الوصف للإنجليزية (مهم جداً للصور والفيديو)"""
+    """ترجمة آمنة - إذا فشلت تعيد النص الأصلي بدلاً من تحطيم السيرفر"""
     try:
         payload = {
             "model": MODEL_CHAT_FAST,
             "messages": [
-                {"role": "system", "content": "Translate to English description. Output ONLY translation."},
+                {"role": "system", "content": "Translate to English. Output ONLY translation."},
                 {"role": "user", "content": text}
             ]
         }
+        # timeout قصير لتجنب تعليق السيرفر
         response = requests.post(
             f"{BASE_URL}/v1/chat/completions", 
             headers=get_auth_headers(), 
-            json=payload, timeout=10
+            json=payload, timeout=5 
         )
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
-    except:
-        pass
-    return text
+    except Exception as e:
+        print(f"Translation Warning: {e}") # طباعة تحذير فقط
+    
+    return text # في حال الفشل، نستخدم النص العربي كما هو
 
 @app.route('/')
 def home():
@@ -87,7 +84,11 @@ def home():
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
+        # استقبال البيانات
         data = request.json
+        if not data:
+            return jsonify({"reply": "No data received"}), 400
+
         user_input = data.get('message', '')
         file_content = data.get('file_content', '')
         file_name = data.get('file_name', '')
@@ -100,37 +101,29 @@ def chat():
         if file_content:
             full_context += f"\n\nFile: {file_name}\n{file_content}"
 
-        # تحديد النية
+        # تحديد النموذج
         intent, selected_model = resolve_model(user_input, bool(file_content), user_mode)
+        print(f"Processing: Intent={intent}, Model={selected_model}") # Log for debugging
 
-        # ---------------------------------------------
-        # 🎥 معالجة الفيديو (Veo)
-        # ---------------------------------------------
+        # --- معالجة الفيديو ---
         if intent == "VIDEO":
             english_prompt = translate_prompt(user_input)
             encoded_prompt = urllib.parse.quote(english_prompt)
             seed = random.randint(0, 999999)
             
-            # رابط الفيديو (يستخدم نفس endpoint الصور لكن مع model=veo)
             video_url = (
                 f"{BASE_URL}/image/{encoded_prompt}"
                 f"?model={MODEL_VIDEO}"
-                f"&seed={seed}"
-                f"&width=1024&height=576" # أبعاد سينمائية
-                f"&aspectRatio=16:9"
-                f"&key={API_KEY}"
+                f"&seed={seed}&width=1024&height=576&aspectRatio=16:9&key={API_KEY}"
             )
-            
             html_response = (
-                f"🎥 <b>Genisi Cinema (Veo):</b> {user_input}<br>"
+                f"🎥 <b>Genisi Veo:</b> {user_input}<br>"
                 f"<small style='color:#888'>{english_prompt}</small><br>"
-                f"<video controls autoplay loop src='{video_url}' style='width:100%; border-radius:10px; margin-top:10px; box-shadow:0 5px 20px rgba(0,0,0,0.5);'></video>"
+                f"<video controls autoplay loop src='{video_url}' style='width:100%; border-radius:10px; margin-top:10px;'></video>"
             )
             return jsonify({"reply": html_response})
 
-        # ---------------------------------------------
-        # 🎨 معالجة الصور
-        # ---------------------------------------------
+        # --- معالجة الصور ---
         elif intent == "IMAGE":
             english_prompt = translate_prompt(user_input)
             encoded_prompt = urllib.parse.quote(english_prompt)
@@ -147,9 +140,7 @@ def chat():
             )
             return jsonify({"reply": html_response})
 
-        # ---------------------------------------------
-        # 💬 معالجة النصوص/البرمجة
-        # ---------------------------------------------
+        # --- معالجة النصوص ---
         else:
             system_msg = "You are Genisi."
             if selected_model == MODEL_CHAT_CODE:
@@ -166,23 +157,35 @@ def chat():
                 "temperature": 0.7
             }
 
+            # زيادة مهلة الانتظار لتجنب Timeout
             response = requests.post(
                 f"{BASE_URL}/v1/chat/completions",
                 headers=get_auth_headers(),
-                json=payload, timeout=60
+                json=payload, timeout=45
             )
 
             if response.status_code == 200:
-                bot_reply = response.json()['choices'][0]['message']['content']
+                try:
+                    # محاولة قراءة JSON بأمان
+                    data_json = response.json()
+                    bot_reply = data_json['choices'][0]['message']['content']
+                except Exception:
+                    # إذا فشل JSON، نأخذ النص كما هو (Pollinations أحياناً ترسل نصاً فقط)
+                    bot_reply = response.text
+                
                 badge = "⚡ GPT-4o" if selected_model == MODEL_CHAT_FAST else "💻 Qwen-Coder"
                 bot_reply = f"`[{badge}]`\n\n{bot_reply}"
                 return jsonify({"reply": bot_reply})
             
-            return jsonify({"reply": f"Error: {response.status_code}"}), 500
+            else:
+                print(f"External API Error: {response.status_code} - {response.text}")
+                return jsonify({"reply": f"عذراً، حدث خطأ من المصدر: {response.status_code}"}), 500
 
     except Exception as e:
-        logger.error(f"Error: {e}")
-        return jsonify({"reply": "Internal Server Error"}), 500
+        # هنا يتم التقاط الخطأ 500 وطباعته في Logs
+        print("FATAL ERROR IN CHAT ENDPOINT:")
+        traceback.print_exc() # هذا السطر مهم جداً، يطبع تفاصيل الخطأ كاملة
+        return jsonify({"reply": "حدث خطأ داخلي في الخادم (Internal Error)."}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
