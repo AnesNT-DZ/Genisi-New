@@ -12,7 +12,6 @@ app = Flask(__name__)
 CORS(app)
 
 # --- إعدادات Genisi ---
-API_KEY = "sk_JHTVJDFsV7uiHdMVFqNKwzY8DZkhw0Oz"
 BASE_URL = "https://gen.pollinations.ai"
 
 MODEL_CHAT_FAST = "gemini-fast"
